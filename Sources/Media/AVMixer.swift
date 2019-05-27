@@ -53,14 +53,19 @@ public class AVMixer: NSObject {
         set { videoIO.continuousAutofocus = newValue }
     }
 
+    let configSemaphore = DispatchSemaphore(value: 1)
+
     @objc var sessionPreset: AVCaptureSession.Preset = .default {
         didSet {
             guard sessionPreset != oldValue else {
                 return
             }
+
+            configSemaphore.wait()
             session.beginConfiguration()
             session.sessionPreset = sessionPreset
             session.commitConfiguration()
+            configSemaphore.signal()
         }
     }
 

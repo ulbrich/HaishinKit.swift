@@ -93,15 +93,20 @@ final class AudioIOComponent: IOComponent {
         encoder.encodeSampleBuffer(sampleBuffer)
     }
 
+    let configSemaphore = DispatchSemaphore(value: 1)
+
 #if os(iOS) || os(macOS)
     func attachAudio(_ audio: AVCaptureDevice?, automaticallyConfiguresApplicationAudioSession: Bool) throws {
         guard let mixer: AVMixer = mixer else {
             return
         }
 
+        configSemaphore.wait()
+
         mixer.session.beginConfiguration()
         defer {
             mixer.session.commitConfiguration()
+            configSemaphore.signal()
         }
 
         output = nil

@@ -299,11 +299,15 @@ final class VideoIOComponent: IOComponent {
         #endif
     }
 
+    let configSemaphore = DispatchSemaphore(value: 1)
+
     #if os(iOS) || os(macOS)
     func attachCamera(_ camera: AVCaptureDevice?) throws {
         guard let mixer: AVMixer = mixer else {
             return
         }
+
+        configSemaphore.wait()
 
         mixer.session.beginConfiguration()
         defer {
@@ -311,6 +315,7 @@ final class VideoIOComponent: IOComponent {
             if torch {
                 setTorchMode(.on)
             }
+            configSemaphore.signal()
         }
 
         output = nil

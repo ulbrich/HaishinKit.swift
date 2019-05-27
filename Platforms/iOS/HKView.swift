@@ -62,15 +62,23 @@ open class HKView: UIView {
             return
         }
 
-        stream.mixer.session.beginConfiguration()
-        layer.session = stream.mixer.session
-        orientation = stream.mixer.videoIO.orientation
-        stream.mixer.session.commitConfiguration()
+        stream.lockQueue.sync {
+            stream.mixer.session.beginConfiguration()
+            self.layer.session = stream.mixer.session
+            self.orientation = stream.mixer.videoIO.orientation
+            stream.mixer.session.commitConfiguration()
 
-        stream.lockQueue.async {
-            stream.mixer.videoIO.drawable = self
-            self.currentStream = stream
-            stream.mixer.startRunning()
+            if Thread.isMainThread {
+                stream.mixer.videoIO.drawable = self
+                currentStream = stream
+                stream.mixer.startRunning()
+            } else {
+                DispatchQueue.main.async {
+                    stream.mixer.videoIO.drawable = self
+                    self.currentStream = stream
+                    stream.mixer.startRunning()
+                }
+            }
         }
     }
 }
