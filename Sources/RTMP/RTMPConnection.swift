@@ -428,13 +428,17 @@ open class RTMPConnection: EventDispatcher {
             stream.on(timer: timer)
         }
         if measureInterval <= previousQueueBytesOut.count {
-            var count: Int = 0
+            var total: Int = 0
             for i in 0..<previousQueueBytesOut.count - 1 where previousQueueBytesOut[i] < previousQueueBytesOut[i + 1] {
-                count += 1
+                total += 1
             }
-            if count == measureInterval - 1 {
+            if total == measureInterval - 1 {
                 for (_, stream) in streams {
                     stream.delegate?.didPublishInsufficientBW(stream, withConnection: self)
+                }
+            } else if total == 0 {
+                for (_, stream) in streams {
+                  stream.delegate?.didPublishSufficientBW(stream, withConnection: self)
                 }
             }
             previousQueueBytesOut.removeFirst()
@@ -516,7 +520,7 @@ extension RTMPConnection: RTMPSocketDelegate {
             case .three:
                 break
             }
-            message.execute(self)
+            message.execute(self, type: chunk.type)
             currentChunk = nil
             messages[chunk.streamId] = message
             if 0 < position && position < data.count {

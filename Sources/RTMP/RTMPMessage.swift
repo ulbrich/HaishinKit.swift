@@ -72,7 +72,7 @@ class RTMPMessage {
         self.type = type
     }
 
-    func execute(_ connection: RTMPConnection) {
+    func execute(_ connection: RTMPConnection, type: RTMPChunkType) {
     }
 }
 
@@ -116,7 +116,7 @@ final class RTMPSetChunkSizeMessage: RTMPMessage {
         self.size = size
     }
 
-    override func execute(_ connection: RTMPConnection) {
+    override func execute(_ connection: RTMPConnection, type: RTMPChunkType) {
         connection.socket.chunkSizeC = Int(size)
     }
 }
@@ -217,7 +217,7 @@ final class RTMPWindowAcknowledgementSizeMessage: RTMPMessage {
         }
     }
 
-    override func execute(_ connection: RTMPConnection) {
+    override func execute(_ connection: RTMPConnection, type: RTMPChunkType) {
         connection.windowSizeC = Int64(size)
         connection.windowSizeS = Int64(size)
     }
@@ -264,7 +264,7 @@ final class RTMPSetPeerBandwidthMessage: RTMPMessage {
         }
     }
 
-    override func execute(_ connection: RTMPConnection) {
+    override func execute(_ connection: RTMPConnection, type: RTMPChunkType) {
         connection.bandWidth = size
     }
 }
@@ -341,7 +341,7 @@ final class RTMPCommandMessage: RTMPMessage {
         self.streamId = streamId
     }
 
-    override func execute(_ connection: RTMPConnection) {
+    override func execute(_ connection: RTMPConnection, type: RTMPChunkType) {
 
         guard let responder: Responder = connection.operations.removeValue(forKey: transactionId) else {
             switch commandName {
@@ -433,7 +433,7 @@ final class RTMPDataMessage: RTMPMessage {
         self.streamId = streamId
     }
 
-    override func execute(_ connection: RTMPConnection) {
+    override func execute(_ connection: RTMPConnection, type: RTMPChunkType) {
         guard let stream: RTMPStream = connection.streams[streamId] else {
             return
         }
@@ -523,7 +523,7 @@ final class RTMPSharedObjectMessage: RTMPMessage {
         self.timestamp = timestamp
     }
 
-    override func execute(_ connection: RTMPConnection) {
+    override func execute(_ connection: RTMPConnection, type: RTMPChunkType) {
         let persistence: Bool = flags[0] == 0x01
         RTMPSharedObject.getRemote(withName: sharedObjectName, remotePath: connection.uri!.absoluteWithoutQueryString, persistence: persistence).on(message: self)
     }
@@ -576,13 +576,19 @@ final class RTMPAudioMessage: RTMPMessage {
         self.payload = payload
     }
 
-    override func execute(_ connection: RTMPConnection) {
+    override func execute(_ connection: RTMPConnection, type: RTMPChunkType) {
         guard let stream: RTMPStream = connection.streams[streamId] else {
             return
         }
         OSAtomicAdd64(Int64(payload.count), &stream.info.byteCount)
         guard codec.isSupported else {
             return
+        }
+        switch type {
+        case .zero:
+            stream.audioTimestamp = Double(timestamp)
+        default:
+            stream.audioTimestamp += Double(timestamp)
         }
         switch FLVAACPacketType(rawValue: payload[1]) {
         case .seq?:
@@ -593,7 +599,7 @@ final class RTMPAudioMessage: RTMPMessage {
             let computedSoundData = payload.advanced(by: codec.headerSize)
             var data: Data = computedSoundData
             data.withUnsafeMutableBytes { (bytes: UnsafeMutablePointer<UInt8>) -> Void in
-                stream.mixer.audioIO.encoder.encodeBytes(bytes, count: computedSoundData.count, presentationTimeStamp: .invalid)
+                stream.mixer.audioIO.encoder.encodeBytes(bytes, count: computedSoundData.count, presentationTimeStamp: CMTime(seconds: stream.audioTimestamp / 1000, preferredTimescale: 1000))
             }
         case .none:
             break
@@ -620,7 +626,7 @@ final class RTMPVideoMessage: RTMPMessage {
         self.payload = payload
     }
 
-    override func execute(_ connection: RTMPConnection) {
+    override func execute(_ connection: RTMPConnection, type: RTMPChunkType) {
         guard let stream: RTMPStream = connection.streams[streamId] else {
             return
         }
@@ -632,19 +638,29 @@ final class RTMPVideoMessage: RTMPMessage {
         case FLVAVCPacketType.seq.rawValue:
             status = createFormatDescription(stream)
         case FLVAVCPacketType.nal.rawValue:
-            enqueueSampleBuffer(stream)
+            enqueueSampleBuffer(stream, type: type)
         default:
             break
         }
     }
 
-    func enqueueSampleBuffer(_ stream: RTMPStream) {
-        stream.videoTimestamp += Double(timestamp)
-
+    func enqueueSampleBuffer(_ stream: RTMPStream, type: RTMPChunkType) {
         let compositionTimeoffset = Int32(data: [0] + payload[2..<5]).bigEndian
+
+        if timestamp == 0 && compositionTimeoffset != 0 {
+            timestamp = UInt32(Double(compositionTimeoffset) - stream.videoTimestamp)
+        }
+
+        switch type {
+        case .zero:
+            stream.videoTimestamp = Double(timestamp)
+        default:
+            stream.videoTimestamp += Double(timestamp)
+        }
+
         var timing = CMSampleTimingInfo(
             duration: CMTimeMake(value: Int64(timestamp), timescale: 1000),
-            presentationTimeStamp: CMTimeMake(value: Int64(stream.videoTimestamp) + Int64(compositionTimeoffset), timescale: 1000),
+            presentationTimeStamp: CMTimeMake(value: Int64(stream.videoTimestamp), timescale: 1000),
             decodeTimeStamp: CMTime.invalid
         )
 
@@ -663,6 +679,11 @@ final class RTMPVideoMessage: RTMPMessage {
                 return
             }
             status = stream.mixer.videoIO.decoder.decodeSampleBuffer(sampleBuffer!)
+            if stream.mixer.videoIO.queue.locked.value {
+                stream.mixer.videoIO.queue.locked.mutate { value in
+                    value = timestamp != 0
+                }
+            }
         }
     }
 
@@ -743,7 +764,7 @@ final class RTMPUserControlMessage: RTMPMessage {
         self.value = value
     }
 
-    override func execute(_ connection: RTMPConnection) {
+    override func execute(_ connection: RTMPConnection, type: RTMPChunkType) {
         switch event {
         case .ping:
             connection.socket.doOutput(chunk: RTMPChunk(
